@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>3D Plane Professional 360 - Smooth Omni-Directional</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #1A1A1D; touch-action: none; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+    </style>
+    <script src="./three.min.js"></script>
+</head>
+<body>
+<script>
+    // 1. Scene Setup
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x1A1A1D);
+    scene.fog = new THREE.Fog(0x1A1A1D, 10, 30);
+
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    // 2. Lighting
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambientLight);
+    const spotLight = new THREE.SpotLight(0xffffff, 1);
+    spotLight.position.set(5, 15, 5);
+    spotLight.castShadow = true;
+    scene.add(spotLight);
+
+    // 3. Environment
+    const gridHelper = new THREE.GridHelper(40, 40, 0x4CAF50, 0x333333);
+    gridHelper.position.y = -3;
+    scene.add(gridHelper);
+
+    // ==========================================
+    // FULL AXIS PIVOT SYSTEM
+    // ==========================================
+    const masterPivot = new THREE.Group();
+    scene.add(masterPivot);
+
+    const planeGroup = new THREE.Group();
+    masterPivot.add(planeGroup);
+
+    // 4. Smooth Aircraft Model
+    const bodyMat = new THREE.MeshStandardMaterial({ color: 0xE0E0E0, roughness: 0.3, metalness: 0.1 });
+    const accentMat = new THREE.MeshStandardMaterial({ color: 0x4fc486, roughness: 0.4 });
+
+    const bodyGeo = new THREE.CylinderGeometry(0.6, 0.6, 7, 64);
+    bodyGeo.rotateX(Math.PI / 2);
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.castShadow = true;
+    planeGroup.add(body);
+
+    const noseGeo = new THREE.ConeGeometry(0.6, 1.5, 64);
+    noseGeo.rotateX(Math.PI / 2);
+    const nose = new THREE.Mesh(noseGeo, bodyMat);
+    nose.position.set(0, 0, 4.25);
+    planeGroup.add(nose);
+
+    const wingGeo = new THREE.BoxGeometry(10, 0.2, 1.8);
+    const wings = new THREE.Mesh(wingGeo, accentMat);
+    wings.position.set(0, 0, 0.5);
+    planeGroup.add(wings);
+
+    const tailGeo = new THREE.BoxGeometry(3.5, 0.2, 1.2);
+    const tail = new THREE.Mesh(tailGeo, accentMat);
+    tail.position.set(0, 0, -3);
+    planeGroup.add(tail);
+
+    const finGeo = new THREE.BoxGeometry(0.2, 1.5, 1.2);
+    const fin = new THREE.Mesh(finGeo, accentMat);
+    fin.position.set(0, 0.75, -3);
+    planeGroup.add(fin);
+
+    camera.position.set(12, 6, 12);
+    camera.lookAt(0, 0, 0);
+
+    // ==========================================
+    // 5. BUTTERY SMOOTH OMNI-DIRECTIONAL TOUCH
+    // ==========================================
+    let isDragging = false;
+    let prevMouseX = 0;
+    let prevMouseY = 0;
+
+    // This creates the "momentum" or "glide" effect
+    let targetQuaternion = new THREE.Quaternion();
+
+    document.addEventListener('pointerdown', (e) => {
+        isDragging = true;
+        prevMouseX = e.clientX;
+        prevMouseY = e.clientY;
+    });
+
+    document.addEventListener('pointerup', () => isDragging = false);
+    document.addEventListener('pointerleave', () => isDragging = false);
+
+    document.addEventListener('pointermove', (e) => {
+        if (!isDragging) return;
+
+        const deltaX = e.clientX - prevMouseX;
+        const deltaY = e.clientY - prevMouseY;
+
+        // BALANCED SPEED: 0.25 (Not too fast, not too slow)
+        const sensitivity = 0.25;
+
+        const deltaRotationQuaternion = new THREE.Quaternion()
+            .setFromEuler(new THREE.Euler(
+                (deltaY * Math.PI / 180) * sensitivity,
+                (deltaX * Math.PI / 180) * sensitivity,
+                0,
+                'XYZ'
+            ));
+
+        // We rotate the TARGET, not the plane directly (for smoothness)
+        targetQuaternion.multiplyQuaternions(deltaRotationQuaternion, targetQuaternion);
+
+        // SYNC WEIGHT MATH
+        const worldDirection = new THREE.Vector3();
+        planeGroup.getWorldDirection(worldDirection);
+        let pitch = Math.asin(worldDirection.y);
+
+        let calculatedCG = (pitch / 0.015) + 600;
+        if (window.AndroidBridge) {
+            window.AndroidBridge.updateCargoFromCG(calculatedCG, masterPivot.rotation.y);
+        }
+
+        prevMouseX = e.clientX;
+        prevMouseY = e.clientY;
+    });
+
+    // Android -> HTML Bridge
+    window.updatePlanePitch = function(cgValue, yawValue) {
+        let pitchDiff = (cgValue - 600) * 0.015;
+        planeGroup.rotation.x = pitchDiff;
+
+        // Restore saved position perfectly when viewing a record
+        if (yawValue !== undefined && yawValue !== null) {
+            masterPivot.rotation.set(0, yawValue, 0);
+            targetQuaternion.copy(masterPivot.quaternion); // Sync the target so it doesn't jump
+        }
+    };
+
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    function animate() {
+        requestAnimationFrame(animate);
+
+        // THE MAGIC: "Slerp" smoothly pulls the plane toward your finger's target
+        masterPivot.quaternion.slerp(targetQuaternion, 0.1);
+
+        renderer.render(scene, camera);
+    }
+    animate();
+</script>
+</body>
+</html>
